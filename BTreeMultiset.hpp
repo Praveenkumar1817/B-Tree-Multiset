@@ -18,12 +18,25 @@ private:
         int keys[MAX_KEYS];                 
         int child_indices[MAX_CHILDREN];    // Array offsets (integers instead of raw pointers)
         int num_keys = 0;
+        int subtree_size = 0;
         bool is_leaf = true;
     };
 
     std::vector<DataBlock> storage_pool_;
     int root_index_;
     size_t total_elements_ = 0; // O(1) Size Tracking Variable
+
+    // Helper to calculate exact O(1) subtree size for tracking
+    void update_subtree_size(int block_idx) {
+        if (block_idx == -1) return;
+        DataBlock& block = storage_pool_[block_idx];
+        block.subtree_size = block.num_keys;
+        if (!block.is_leaf) {
+            for (int i = 0; i <= block.num_keys; ++i) {
+                block.subtree_size += storage_pool_[block.child_indices[i]].subtree_size;
+            }
+        }
+    }
 
     // Counts keys strictly smaller than 'val' inside a subtree
     int count_keys_less_than(int block_idx, int val) const {
@@ -40,28 +53,14 @@ private:
         if (block.is_leaf) return i;
 
         int lower_count = 0;
-        // Optimization: Instead of recursively calculating child subtree sizes,
-        // we traverse down to aggregate the exact path footprint.
+        // Optimization: O(1) size lookups using the augmented Order Statistic property
         for (int j = 0; j < i; j++) {
-            lower_count += compute_subtree_size(block.child_indices[j]);
+            lower_count += storage_pool_[block.child_indices[j]].subtree_size;
         }
         lower_count += i;
         lower_count += count_keys_less_than(block.child_indices[i], val);
 
         return lower_count;
-    }
-
-    // Helper used ONLY during structural internal node splits
-    int compute_subtree_size(int block_idx) const {
-        if (block_idx == -1) return 0;
-        const DataBlock& block = storage_pool_[block_idx];
-        if (block.is_leaf) return block.num_keys;
-
-        int total_size = block.num_keys;
-        for (int i = 0; i <= block.num_keys; ++i) {
-            total_size += compute_subtree_size(block.child_indices[i]);
-        }
-        return total_size;
     }
 
     void split_full_block(int parent_idx, int i, int child_idx) {
@@ -82,6 +81,9 @@ private:
         storage_pool_[child_idx].num_keys = BLOCK_DEGREE - 1;
         storage_pool_.push_back(new_block);
         int new_block_idx = storage_pool_.size() - 1;
+        
+        update_subtree_size(child_idx);
+        update_subtree_size(new_block_idx);
 
         for (int j = storage_pool_[parent_idx].num_keys; j >= i + 1; j--) {
             storage_pool_[parent_idx].child_indices[j + 1] = storage_pool_[parent_idx].child_indices[j];
@@ -97,6 +99,7 @@ private:
     }
 
     void insert_into_non_full_block(int block_idx, int val) {
+        storage_pool_[block_idx].subtree_size++;
         int i = storage_pool_[block_idx].num_keys - 1;
 
         if (storage_pool_[block_idx].is_leaf) {
@@ -137,6 +140,7 @@ public:
             std::fill(std::begin(new_root.child_indices), std::end(new_root.child_indices), -1);
             new_root.is_leaf = false;
             new_root.child_indices[0] = root_index_; 
+            new_root.subtree_size = storage_pool_[root_index_].subtree_size;
             storage_pool_.push_back(new_root);
             
             int old_root_idx = root_index_;
